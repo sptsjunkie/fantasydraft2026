@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173/fantasy-draft-2026/](http://localhost:5173/fantasy-draft-2026/) in your browser.
+Open [http://localhost:5173/fantasydraft2026/](http://localhost:5173/fantasydraft2026/) in your browser.
 
 ## Build
 
@@ -30,5 +30,5 @@ This runs `npm run build` automatically (via `predeploy`), then publishes the `d
 Once deployed, the app is available at:
 
 ```
-https://<your-username>.github.io/fantasy-draft-2026/
+https://<your-username>.github.io/fantasydraft2026/
 ```

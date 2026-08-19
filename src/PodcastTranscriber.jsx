@@ -160,6 +160,7 @@ export default function PodcastTranscriber({ onBack }) {
                   data.results[0];
       }
 
+      let audioUrlFromFallback = null;
       if (!episode?.episodeUrl && parsed.podcastId) {
         let podcastData;
         try {
@@ -175,9 +176,16 @@ export default function PodcastTranscriber({ onBack }) {
           const byId = podcastData.results.find(r =>
             String(r.trackId) === parsed.episodeId
           );
-          const withAudio = podcastData.results.find(r => r.episodeUrl && r.wrapperType === 'podcastEpisode');
-          if (byId) episode = byId;
-          else if (withAudio && !episode) episode = withAudio;
+          if (byId) {
+            episode = byId;
+          } else if (!episode) {
+            episode = podcastData.results.find(r =>
+              r.wrapperType === 'podcastEpisode' && r.trackName
+            ) || podcastData.results[0];
+          }
+          if (!episode?.episodeUrl && byId?.episodeUrl) {
+            audioUrlFromFallback = byId.episodeUrl;
+          }
         }
       }
 
@@ -186,7 +194,7 @@ export default function PodcastTranscriber({ onBack }) {
         throw new Error(`Episode not found (resultCount: ${data?.resultCount ?? 'N/A'}, fields: ${debugFields}). Try uploading the audio file directly.`);
       }
 
-      const audioUrl = episode.episodeUrl || episode.previewUrl;
+      const audioUrl = episode.episodeUrl || audioUrlFromFallback || episode.previewUrl;
       setEpisodeInfo({
         title: episode.trackName || episode.collectionName || 'Unknown Episode',
         showName: episode.collectionName || episode.artistName || '',

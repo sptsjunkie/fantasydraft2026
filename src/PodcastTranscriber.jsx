@@ -232,14 +232,19 @@ export default function PodcastTranscriber({ onBack }) {
     setTranscriptionProgress(0);
 
     let file = source;
+    let wasAutoDownloaded = false;
 
     if (!file && episodeInfo?.audioUrl) {
       setStatus('downloading');
       try {
         const res = await fetch(episodeInfo.audioUrl);
         if (!res.ok) throw new Error('fetch-failed');
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('text/html')) throw new Error('not-audio');
         const blob = await res.blob();
+        if (blob.size < 1000) throw new Error('too-small');
         file = new File([blob], 'episode.mp3', { type: blob.type || 'audio/mpeg' });
+        wasAutoDownloaded = true;
       } catch {
         setCorsFallback(true);
         setStatus('idle');
@@ -258,7 +263,12 @@ export default function PodcastTranscriber({ onBack }) {
     try {
       audioData = await decodeAudioFile(file);
     } catch (err) {
-      setError(`Could not decode audio: ${err.message}. Try a different file format.`);
+      if (wasAutoDownloaded) {
+        setCorsFallback(true);
+        setStatus('idle');
+        return;
+      }
+      setError(`Could not decode audio: ${err.message}. Try converting to MP3 or WAV format.`);
       setStatus('idle');
       return;
     }

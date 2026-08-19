@@ -31,6 +31,32 @@ function parseApplePodcastUrl(url) {
   }
 }
 
+function itunesLookup(id) {
+  return new Promise((resolve, reject) => {
+    const cb = '_itunes_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error('iTunes API request timed out'));
+    }, 15000);
+    function cleanup() {
+      clearTimeout(timeout);
+      delete window[cb];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+    window[cb] = (data) => {
+      cleanup();
+      resolve(data);
+    };
+    const script = document.createElement('script');
+    script.src = `https://itunes.apple.com/lookup?id=${id}&entity=podcastEpisode&callback=${cb}`;
+    script.onerror = () => {
+      cleanup();
+      reject(new Error('Failed to reach iTunes API'));
+    };
+    document.head.appendChild(script);
+  });
+}
+
 async function decodeAudioFile(file) {
   const arrayBuffer = await file.arrayBuffer();
   const audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -115,19 +141,29 @@ export default function PodcastTranscriber({ onBack }) {
 
     setStatus('fetching');
     try {
-      const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.episodeId}&entity=podcastEpisode`);
-      if (!res.ok) throw new Error(`iTunes API returned ${res.status}`);
-      const data = await res.json();
+      let data;
+      try {
+        data = await itunesLookup(parsed.episodeId);
+      } catch {
+        const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.episodeId}`);
+        if (!res.ok) throw new Error(`iTunes API returned ${res.status}`);
+        data = await res.json();
+      }
 
-      const episode = data.results?.find(r => r.wrapperType === 'podcastEpisode' || r.kind === 'podcast-episode');
+      const episode = data.results?.find(r =>
+        r.episodeUrl ||
+        r.wrapperType === 'podcastEpisode' ||
+        r.kind === 'podcast-episode' ||
+        (r.collectionType === 'Podcast' && r.trackName)
+      );
       if (!episode) throw new Error('Episode not found. Please check the URL and try again.');
 
       setEpisodeInfo({
         title: episode.trackName,
-        showName: episode.collectionName,
+        showName: episode.collectionName || episode.artistName,
         artwork: episode.artworkUrl600 || episode.artworkUrl160 || episode.artworkUrl100,
         duration: episode.trackTimeMillis,
-        audioUrl: episode.episodeUrl,
+        audioUrl: episode.episodeUrl || episode.previewUrl,
         releaseDate: episode.releaseDate,
         description: episode.shortDescription || episode.description,
       });

@@ -31,7 +31,7 @@ function parseApplePodcastUrl(url) {
   }
 }
 
-function itunesLookup(id) {
+function itunesLookup(id, extraParams = '') {
   return new Promise((resolve, reject) => {
     const cb = '_itunes_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     const timeout = setTimeout(() => {
@@ -48,7 +48,7 @@ function itunesLookup(id) {
       resolve(data);
     };
     const script = document.createElement('script');
-    script.src = `https://itunes.apple.com/lookup?id=${id}&callback=${cb}`;
+    script.src = `https://itunes.apple.com/lookup?id=${id}${extraParams}&callback=${cb}`;
     script.onerror = () => {
       cleanup();
       reject(new Error('Failed to reach iTunes API'));
@@ -160,10 +160,10 @@ export default function PodcastTranscriber({ onBack }) {
                   data.results[0];
       }
 
-      if (!episode && parsed.podcastId) {
+      if (!episode?.episodeUrl && parsed.podcastId) {
         let podcastData;
         try {
-          podcastData = await itunesLookup(parsed.podcastId);
+          podcastData = await itunesLookup(parsed.podcastId, '&entity=podcastEpisode');
         } catch {
           try {
             const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.podcastId}&entity=podcastEpisode`);
@@ -172,14 +172,12 @@ export default function PodcastTranscriber({ onBack }) {
         }
 
         if (podcastData?.results?.length > 0) {
-          episode = podcastData.results.find(r =>
-            String(r.trackId) === parsed.episodeId || String(r.collectionId) === parsed.episodeId
+          const byId = podcastData.results.find(r =>
+            String(r.trackId) === parsed.episodeId
           );
-          if (!episode) {
-            episode = podcastData.results.find(r => r.episodeUrl) ||
-                      podcastData.results.find(r => r.wrapperType === 'podcastEpisode') ||
-                      podcastData.results.find(r => r.trackName && r.wrapperType !== 'artist');
-          }
+          const withAudio = podcastData.results.find(r => r.episodeUrl && r.wrapperType === 'podcastEpisode');
+          if (byId) episode = byId;
+          else if (withAudio && !episode) episode = withAudio;
         }
       }
 
@@ -188,15 +186,17 @@ export default function PodcastTranscriber({ onBack }) {
         throw new Error(`Episode not found (resultCount: ${data?.resultCount ?? 'N/A'}, fields: ${debugFields}). Try uploading the audio file directly.`);
       }
 
+      const audioUrl = episode.episodeUrl || episode.previewUrl;
       setEpisodeInfo({
         title: episode.trackName || episode.collectionName || 'Unknown Episode',
         showName: episode.collectionName || episode.artistName || '',
         artwork: episode.artworkUrl600 || episode.artworkUrl160 || episode.artworkUrl100 || episode.artworkUrl60,
         duration: episode.trackTimeMillis,
-        audioUrl: episode.episodeUrl || episode.previewUrl,
+        audioUrl,
         releaseDate: episode.releaseDate,
         description: episode.shortDescription || episode.description,
       });
+      if (!audioUrl) setCorsFallback(true);
       setStatus('idle');
     } catch (err) {
       setError(err.message || 'Failed to fetch episode info');
@@ -482,24 +482,37 @@ export default function PodcastTranscriber({ onBack }) {
             <button
               className="btn btn-primary"
               onClick={() => startTranscription(audioFile)}
-              disabled={isWorking}
+              disabled={isWorking || (!audioFile && !episodeInfo.audioUrl)}
             >
-              {audioFile ? 'Transcribe Uploaded File' : 'Transcribe This Episode'}
+              {audioFile ? 'Transcribe Uploaded File' : episodeInfo.audioUrl ? 'Transcribe This Episode' : 'Upload Audio to Transcribe'}
             </button>
           </div>
 
           {corsFallback && (
             <div className="cors-fallback">
-              <p>&#9888;&#65039; Direct audio download was blocked by the podcast host. Follow these steps instead:</p>
-              <ol className="steps">
-                <li>
-                  <a href={episodeInfo.audioUrl} target="_blank" rel="noopener noreferrer">
-                    Click here to download the audio file
-                  </a>
-                </li>
-                <li>Upload the downloaded file using the upload area above</li>
-                <li>Click &quot;Transcribe Uploaded File&quot;</li>
-              </ol>
+              {episodeInfo.audioUrl ? (
+                <>
+                  <p>&#9888;&#65039; Direct audio download was blocked by the podcast host. Follow these steps instead:</p>
+                  <ol className="steps">
+                    <li>
+                      <a href={episodeInfo.audioUrl} target="_blank" rel="noopener noreferrer">
+                        Click here to download the audio file
+                      </a>
+                    </li>
+                    <li>Upload the downloaded file using the upload area above</li>
+                    <li>Click &quot;Transcribe Uploaded File&quot;</li>
+                  </ol>
+                </>
+              ) : (
+                <>
+                  <p>&#9888;&#65039; The audio file isn't available directly from Apple Podcasts. To transcribe this episode:</p>
+                  <ol className="steps">
+                    <li>Find and download the episode from the podcast app or website</li>
+                    <li>Upload the downloaded file using the upload area above</li>
+                    <li>Click &quot;Transcribe Uploaded File&quot;</li>
+                  </ol>
+                </>
+              )}
             </div>
           )}
         </div>

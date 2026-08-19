@@ -48,7 +48,7 @@ function itunesLookup(id) {
       resolve(data);
     };
     const script = document.createElement('script');
-    script.src = `https://itunes.apple.com/lookup?id=${id}&entity=podcastEpisode&callback=${cb}`;
+    script.src = `https://itunes.apple.com/lookup?id=${id}&callback=${cb}`;
     script.onerror = () => {
       cleanup();
       reject(new Error('Failed to reach iTunes API'));
@@ -145,23 +145,53 @@ export default function PodcastTranscriber({ onBack }) {
       try {
         data = await itunesLookup(parsed.episodeId);
       } catch {
-        const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.episodeId}`);
-        if (!res.ok) throw new Error(`iTunes API returned ${res.status}`);
-        data = await res.json();
+        try {
+          const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.episodeId}`);
+          if (res.ok) data = await res.json();
+        } catch {}
       }
 
-      const episode = data.results?.find(r =>
-        r.episodeUrl ||
-        r.wrapperType === 'podcastEpisode' ||
-        r.kind === 'podcast-episode' ||
-        (r.collectionType === 'Podcast' && r.trackName)
-      );
-      if (!episode) throw new Error('Episode not found. Please check the URL and try again.');
+      let episode = null;
+
+      if (data?.results?.length > 0) {
+        episode = data.results.find(r => r.episodeUrl) ||
+                  data.results.find(r => r.wrapperType === 'podcastEpisode' || r.kind === 'podcast-episode') ||
+                  data.results.find(r => r.trackName) ||
+                  data.results[0];
+      }
+
+      if (!episode && parsed.podcastId) {
+        let podcastData;
+        try {
+          podcastData = await itunesLookup(parsed.podcastId);
+        } catch {
+          try {
+            const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.podcastId}&entity=podcastEpisode`);
+            if (res.ok) podcastData = await res.json();
+          } catch {}
+        }
+
+        if (podcastData?.results?.length > 0) {
+          episode = podcastData.results.find(r =>
+            String(r.trackId) === parsed.episodeId || String(r.collectionId) === parsed.episodeId
+          );
+          if (!episode) {
+            episode = podcastData.results.find(r => r.episodeUrl) ||
+                      podcastData.results.find(r => r.wrapperType === 'podcastEpisode') ||
+                      podcastData.results.find(r => r.trackName && r.wrapperType !== 'artist');
+          }
+        }
+      }
+
+      if (!episode) {
+        const debugFields = data?.results?.[0] ? Object.keys(data.results[0]).join(', ') : 'no results';
+        throw new Error(`Episode not found (resultCount: ${data?.resultCount ?? 'N/A'}, fields: ${debugFields}). Try uploading the audio file directly.`);
+      }
 
       setEpisodeInfo({
-        title: episode.trackName,
-        showName: episode.collectionName || episode.artistName,
-        artwork: episode.artworkUrl600 || episode.artworkUrl160 || episode.artworkUrl100,
+        title: episode.trackName || episode.collectionName || 'Unknown Episode',
+        showName: episode.collectionName || episode.artistName || '',
+        artwork: episode.artworkUrl600 || episode.artworkUrl160 || episode.artworkUrl100 || episode.artworkUrl60,
         duration: episode.trackTimeMillis,
         audioUrl: episode.episodeUrl || episode.previewUrl,
         releaseDate: episode.releaseDate,

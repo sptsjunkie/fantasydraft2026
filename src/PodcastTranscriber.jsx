@@ -25,13 +25,22 @@ function parseApplePodcastUrl(url) {
     const episodeId = parsed.searchParams.get('i');
     const pathMatch = parsed.pathname.match(/\/id(\d+)/);
     const podcastId = pathMatch ? pathMatch[1] : null;
-    return { episodeId, podcastId };
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    const podcastIdx = segments.indexOf('podcast');
+    let episodeSlug = null;
+    if (podcastIdx >= 0 && podcastIdx + 1 < segments.length) {
+      const nextSeg = segments[podcastIdx + 1];
+      if (!nextSeg.startsWith('id')) {
+        episodeSlug = nextSeg;
+      }
+    }
+    return { episodeId, podcastId, episodeSlug };
   } catch {
     return null;
   }
 }
 
-function itunesLookup(id, extraParams = '') {
+function itunesJsonp(url) {
   return new Promise((resolve, reject) => {
     const cb = '_itunes_' + Date.now() + '_' + Math.random().toString(36).slice(2);
     const timeout = setTimeout(() => {
@@ -47,8 +56,9 @@ function itunesLookup(id, extraParams = '') {
       cleanup();
       resolve(data);
     };
+    const sep = url.includes('?') ? '&' : '?';
     const script = document.createElement('script');
-    script.src = `https://itunes.apple.com/lookup?id=${id}${extraParams}&callback=${cb}`;
+    script.src = `${url}${sep}callback=${cb}`;
     script.onerror = () => {
       cleanup();
       reject(new Error('Failed to reach iTunes API'));
@@ -141,60 +151,72 @@ export default function PodcastTranscriber({ onBack }) {
 
     setStatus('fetching');
     try {
-      let data;
-      try {
-        data = await itunesLookup(parsed.episodeId);
-      } catch {
+      let episode = null;
+
+      if (parsed.episodeSlug && parsed.podcastId) {
+        const searchTerm = parsed.episodeSlug.replace(/-/g, ' ');
+        const searchUrl = `https://itunes.apple.com/search?term=${encodeURIComponent(searchTerm)}&media=podcast&entity=podcastEpisode&collectionId=${parsed.podcastId}&limit=10`;
         try {
-          const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.episodeId}`);
-          if (res.ok) data = await res.json();
+          const data = await itunesJsonp(searchUrl);
+          if (data?.results?.length > 0) {
+            episode = data.results.find(r => String(r.trackId) === parsed.episodeId) ||
+                      data.results.find(r => r.episodeUrl) ||
+                      data.results[0];
+          }
         } catch {}
       }
 
-      let episode = null;
-
-      if (data?.results?.length > 0) {
-        episode = data.results.find(r => r.episodeUrl) ||
-                  data.results.find(r => r.wrapperType === 'podcastEpisode' || r.kind === 'podcast-episode') ||
-                  data.results.find(r => r.trackName) ||
-                  data.results[0];
+      if (!episode) {
+        try {
+          const data = await itunesJsonp(`https://itunes.apple.com/lookup?id=${parsed.episodeId}`);
+          if (data?.results?.length > 0) {
+            episode = data.results.find(r => r.episodeUrl) ||
+                      data.results.find(r => r.wrapperType === 'podcastEpisode' || r.kind === 'podcast-episode') ||
+                      data.results.find(r => r.trackName) ||
+                      data.results[0];
+          }
+        } catch {}
       }
 
-      let audioUrlFromFallback = null;
-      if (!episode?.episodeUrl && parsed.podcastId) {
-        let podcastData;
+      if (!episode && parsed.podcastId) {
         try {
-          podcastData = await itunesLookup(parsed.podcastId, '&entity=podcastEpisode');
-        } catch {
-          try {
-            const res = await fetch(`https://itunes.apple.com/lookup?id=${parsed.podcastId}&entity=podcastEpisode`);
-            if (res.ok) podcastData = await res.json();
-          } catch {}
-        }
-
-        if (podcastData?.results?.length > 0) {
-          const byId = podcastData.results.find(r =>
-            String(r.trackId) === parsed.episodeId
-          );
-          if (byId) {
-            episode = byId;
-          } else if (!episode) {
-            episode = podcastData.results.find(r =>
-              r.wrapperType === 'podcastEpisode' && r.trackName
-            ) || podcastData.results[0];
+          const data = await itunesJsonp(`https://itunes.apple.com/lookup?id=${parsed.podcastId}&entity=podcastEpisode&limit=200`);
+          if (data?.results?.length > 0) {
+            episode = data.results.find(r => String(r.trackId) === parsed.episodeId) ||
+                      data.results.find(r => r.episodeUrl && r.wrapperType === 'podcastEpisode');
           }
-          if (!episode?.episodeUrl && byId?.episodeUrl) {
-            audioUrlFromFallback = byId.episodeUrl;
-          }
-        }
+        } catch {}
       }
 
       if (!episode) {
-        const debugFields = data?.results?.[0] ? Object.keys(data.results[0]).join(', ') : 'no results';
-        throw new Error(`Episode not found (resultCount: ${data?.resultCount ?? 'N/A'}, fields: ${debugFields}). Try uploading the audio file directly.`);
+        const slugTitle = parsed.episodeSlug
+          ? parsed.episodeSlug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+          : null;
+        if (slugTitle) {
+          let artwork = null;
+          try {
+            const showData = await itunesJsonp(`https://itunes.apple.com/lookup?id=${parsed.podcastId}`);
+            if (showData?.results?.[0]) {
+              artwork = showData.results[0].artworkUrl600 || showData.results[0].artworkUrl100;
+            }
+          } catch {}
+          setEpisodeInfo({
+            title: slugTitle,
+            showName: '',
+            artwork,
+            duration: null,
+            audioUrl: null,
+            releaseDate: null,
+            description: null,
+          });
+          setCorsFallback(true);
+          setStatus('idle');
+          return;
+        }
+        throw new Error('Episode not found. Try uploading the audio file directly.');
       }
 
-      const audioUrl = episode.episodeUrl || audioUrlFromFallback || episode.previewUrl;
+      const audioUrl = episode.episodeUrl || episode.previewUrl;
       setEpisodeInfo({
         title: episode.trackName || episode.collectionName || 'Unknown Episode',
         showName: episode.collectionName || episode.artistName || '',
